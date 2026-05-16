@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# python
+.venv/
+__pycache__/
+*.py[co]
+
+# website
+website/output/
+website/data/
+
+# planning docs
+docs/
+
+# agents
+.agents/
+.claude/skills/
+.superpowers/
+.playwright-cli/
+skills-lock.json

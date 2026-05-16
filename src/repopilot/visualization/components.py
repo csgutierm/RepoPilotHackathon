@@ -316,33 +316,49 @@ def create_network_graph(
     # Calculate layout
     pos = nx.spring_layout(G, k=2, iterations=50)
     
-    # Create edge traces
+    # Build edge coordinates
+    edge_x = []
+    edge_y = []
+    for edge in G.edges():
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+    
+    # Create edge trace
     edge_trace = go.Scatter(
-        x=[],
-        y=[],
+        x=edge_x,
+        y=edge_y,
         line=dict(width=1, color='#888'),
         hoverinfo='none',
         mode='lines'
     )
     
-    for edge in G.edges():
-        x0, y0 = pos[edge[0]]
-        x1, y1 = pos[edge[1]]
-        edge_trace['x'] += tuple([x0, x1, None])
-        edge_trace['y'] += tuple([y0, y1, None])
+    # Build node coordinates and properties
+    node_x = []
+    node_y = []
+    node_text = []
+    node_color = []
     
-    # Create node traces
+    for node in G.nodes():
+        x, y = pos[node]
+        node_x.append(x)
+        node_y.append(y)
+        node_text.append(G.nodes[node].get('label', node))
+        node_color.append(len(list(G.neighbors(node))))
+    
+    # Create node trace
     node_trace = go.Scatter(
-        x=[],
-        y=[],
-        text=[],
+        x=node_x,
+        y=node_y,
+        text=node_text,
         mode='markers+text',
         hoverinfo='text',
         marker=dict(
             showscale=True,
             colorscale='YlGnBu',
             size=20,
-            color=[],
+            color=node_color,
             colorbar=dict(
                 thickness=15,
                 title=dict(text='Node Connections', side='right'),
@@ -352,13 +368,6 @@ def create_network_graph(
         ),
         textposition="top center"
     )
-    
-    for node in G.nodes():
-        x, y = pos[node]
-        node_trace['x'] += tuple([x])
-        node_trace['y'] += tuple([y])
-        node_trace['text'] += tuple([G.nodes[node].get('label', node)])
-        node_trace['marker']['color'] += tuple([len(list(G.neighbors(node)))])
     
     # Create figure
     fig = go.Figure(data=[edge_trace, node_trace],

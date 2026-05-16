@@ -7,7 +7,12 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+import tempfile
+import shutil
+import zipfile
+import requests
+import re
 
 from src.repopilot.analyzers import ASTAnalyzer, DependencyAnalyzer, CoverageAnalyzer
 from src.repopilot.generators import DocGenerator, OnboardingGenerator
@@ -20,6 +25,111 @@ from src.repopilot.visualization.components import (
     create_treemap_chart,
     detect_circular_dependencies,
 )
+
+
+def parse_github_url(url: str) -> Optional[tuple]:
+    """
+    Parse GitHub URL and extract owner and repo name
+    
+    Args:
+        url: GitHub repository URL
+        
+    Returns:
+        Tuple of (owner, repo) or None if invalid
+    """
+    patterns = [
+        r'github\.com/([^/]+)/([^/]+?)(?:\.git)?$',
+        r'github\.com/([^/]+)/([^/]+)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            owner, repo = match.groups()
+            repo = repo.replace('.git', '')
+            return owner, repo
+    
+    return None
+
+
+def download_github_repo(url: str, progress_callback=None) -> Optional[Path]:
+    """
+    Download GitHub repository as ZIP and extract it
+    
+    Args:
+        url: GitHub repository URL
+        progress_callback: Optional callback for progress updates
+        
+    Returns:
+        Path to extracted repository or None if failed
+    """
+    try:
+        # Parse GitHub URL
+        parsed = parse_github_url(url)
+        if not parsed:
+            return None
+        
+        owner, repo = parsed
+        
+        if progress_callback:
+            progress_callback("📥 Downloading repository...")
+        
+        # Construct ZIP download URL
+        zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
+        
+        # Try main branch first, then master
+        response = requests.get(zip_url, stream=True, timeout=30)
+        if response.status_code == 404:
+            zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
+            response = requests.get(zip_url, stream=True, timeout=30)
+        
+        if response.status_code != 200:
+            return None
+        
+        # Create temporary directory
+        temp_dir = Path(tempfile.mkdtemp(prefix="repopilot_"))
+        zip_path = temp_dir / "repo.zip"
+        
+        # Download ZIP file
+        with open(zip_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        if progress_callback:
+            progress_callback("📦 Extracting repository...")
+        
+        # Extract ZIP
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+        
+        # Remove ZIP file
+        zip_path.unlink()
+        
+        # Find extracted directory (usually repo-main or repo-master)
+        extracted_dirs = [d for d in temp_dir.iterdir() if d.is_dir()]
+        if not extracted_dirs:
+            return None
+        
+        repo_dir = extracted_dirs[0]
+        
+        if progress_callback:
+            progress_callback(f"✅ Repository downloaded: {owner}/{repo}")
+        
+        return repo_dir
+        
+    except Exception as e:
+        if progress_callback:
+            progress_callback(f"❌ Error: {str(e)}")
+        return None
+
+
+def cleanup_temp_dir(path: Path):
+    """Clean up temporary directory"""
+    try:
+        if path and path.exists():
+            shutil.rmtree(path.parent if path.name.startswith(('repo-', 'RepoPilot')) else path)
+    except Exception:
+        pass
 
 
 # Page configuration
@@ -164,7 +274,7 @@ def create_overview_tab(architecture: Dict[str, Any], dependencies: Dict[str, An
             title="Code Distribution",
             hole=0.4
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     with col2:
         st.subheader("🔗 Dependencies")
@@ -179,7 +289,7 @@ def create_overview_tab(architecture: Dict[str, Any], dependencies: Dict[str, An
             hole=0.4,
             colors=['#667eea', '#764ba2']
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     with col3:
         st.subheader("🎯 Test Coverage")
@@ -189,7 +299,7 @@ def create_overview_tab(architecture: Dict[str, Any], dependencies: Dict[str, An
             max_value=100,
             threshold=80
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     st.divider()
     
@@ -222,7 +332,7 @@ def create_overview_tab(architecture: Dict[str, Any], dependencies: Dict[str, An
             }
         ))
         fig.update_layout(height=300)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     with col2:
         st.markdown("### Score Breakdown")
@@ -278,7 +388,7 @@ def create_architecture_tab(architecture: Dict[str, Any]) -> None:
             values = df_modules['Lines'].tolist()
             
             fig = create_treemap_chart(labels, parents, values, "Module Size by Lines of Code")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Complexity scatter
             col1, col2 = st.columns(2)
@@ -294,7 +404,7 @@ def create_architecture_tab(architecture: Dict[str, Any]) -> None:
                     y_label="Complexity",
                     size=df_modules['Functions'].tolist()
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             
             with col2:
                 st.subheader("📈 Top Modules by Complexity")
@@ -307,13 +417,13 @@ def create_architecture_tab(architecture: Dict[str, Any]) -> None:
                     y_label="Complexity",
                     color_scale='Reds'
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             
             # Data table
             st.subheader("📋 Detailed Module Data")
             st.dataframe(
                 df_modules.style.background_gradient(subset=['Complexity'], cmap='RdYlGn_r'),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
 
@@ -375,7 +485,7 @@ def create_dependencies_tab(dependencies: Dict[str, Any]) -> None:
         edges = [{'source': dep['source'], 'target': dep['target']} for dep in module_deps[:100]]  # Limit for performance
         
         fig = create_network_graph(nodes, edges, "Module Dependency Graph", circular_deps)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         
         if len(module_deps) > 100:
             st.info(f"ℹ️ Showing first 100 of {len(module_deps)} dependencies for performance")
@@ -398,7 +508,7 @@ def create_dependencies_tab(dependencies: Dict[str, Any]) -> None:
                 })
             
             df_packages = pd.DataFrame(packages_data)
-            st.dataframe(df_packages, use_container_width=True, hide_index=True)
+            st.dataframe(df_packages, width='stretch', hide_index=True)
         
         with col2:
             st.metric("Total External", len(dependencies['external_packages_list']))
@@ -443,7 +553,7 @@ def create_documentation_tab(architecture: Dict[str, Any], repo_path: Path) -> N
             hole=0.4,
             colors=['#4caf50', '#f44336']
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     with col2:
         st.subheader("🎯 Coverage Gauge")
@@ -453,7 +563,7 @@ def create_documentation_tab(architecture: Dict[str, Any], repo_path: Path) -> N
             max_value=100,
             threshold=70
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     st.divider()
     
@@ -481,7 +591,7 @@ def create_documentation_tab(architecture: Dict[str, Any], repo_path: Path) -> N
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("📄 Generate Architecture Docs", use_container_width=True):
+        if st.button("📄 Generate Architecture Docs", width='stretch'):
             with st.spinner("Generating..."):
                 try:
                     doc_gen = DocGenerator(repo_path)
@@ -492,7 +602,7 @@ def create_documentation_tab(architecture: Dict[str, Any], repo_path: Path) -> N
                     st.error(f"❌ Error: {str(e)}")
     
     with col2:
-        if st.button("📋 Generate API Docs", use_container_width=True):
+        if st.button("📋 Generate API Docs", width='stretch'):
             st.info("🚧 API documentation generation coming soon!")
 
 
@@ -528,7 +638,7 @@ def create_testing_tab(coverage: Dict[str, Any]) -> None:
             threshold=80,
             reference=80
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     with col2:
         st.subheader("📊 Test Type Distribution")
@@ -540,7 +650,7 @@ def create_testing_tab(coverage: Dict[str, Any]) -> None:
                 title="Test Types",
                 hole=0.3
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("No test breakdown data available")
     
@@ -573,12 +683,12 @@ def create_testing_tab(coverage: Dict[str, Any]) -> None:
                 y_label="Coverage %",
                 color_scale='RdYlGn'
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Data table
             st.dataframe(
                 df_cov.style.background_gradient(subset=['Coverage'], cmap='RdYlGn', vmin=0, vmax=100),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
     
@@ -694,14 +804,14 @@ def create_onboarding_tab(architecture: Dict[str, Any], dependencies: Dict[str, 
         df_modules = pd.DataFrame(modules_data)
         df_modules = df_modules.sort_values('Lines', ascending=False).head(10)
         
-        st.dataframe(df_modules, use_container_width=True, hide_index=True)
+        st.dataframe(df_modules, width='stretch', hide_index=True)
     
     st.divider()
     
     # Generate onboarding report
     st.subheader("📥 Generate Onboarding Report")
     
-    if st.button("📋 Generate Complete Onboarding Report", use_container_width=True):
+    if st.button("📋 Generate Complete Onboarding Report", width='stretch'):
         with st.spinner("Generating comprehensive onboarding report..."):
             try:
                 onboarding_gen = OnboardingGenerator(repo_path)
@@ -731,17 +841,35 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # Repository path input
-        repo_path_input = st.text_input(
-            "Repository Path",
-            value=".",
-            help="Enter the path to the repository you want to analyze"
+        # Repository source selection
+        repo_source = st.radio(
+            "Repository Source",
+            ["📁 Local Path", "🌐 GitHub URL"],
+            help="Choose whether to analyze a local repository or download from GitHub"
         )
         
-        repo_path = Path(repo_path_input)
+        if repo_source == "📁 Local Path":
+            # Local repository path input
+            repo_path_input = st.text_input(
+                "Repository Path",
+                value=".",
+                help="Enter the path to the local repository"
+            )
+            repo_path = Path(repo_path_input)
+            is_github = False
+        else:
+            # GitHub URL input
+            github_url = st.text_input(
+                "GitHub Repository URL",
+                value="",
+                placeholder="https://github.com/owner/repo",
+                help="Enter the GitHub repository URL (e.g., https://github.com/python/cpython)"
+            )
+            repo_path = None
+            is_github = True
         
         # Analyze button
-        analyze_button = st.button("🔍 Analyze Repository", type="primary", use_container_width=True)
+        analyze_button = st.button("🔍 Analyze Repository", type="primary", width='stretch')
         
         st.divider()
         
@@ -786,29 +914,62 @@ def main():
     
     # Main content
     if analyze_button:
-        if not repo_path.exists():
-            st.error(f"❌ Repository path not found: {repo_path_input}")
-            return
-        
-        if not repo_path.is_dir():
-            st.error(f"❌ Path is not a directory: {repo_path_input}")
-            return
-        
-        # Progress indicator
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        temp_repo_path = None
         
         try:
+            # Handle GitHub URL
+            if is_github:
+                if not github_url:
+                    st.error("❌ Please enter a GitHub repository URL")
+                    return
+                
+                # Progress indicator
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # Download repository
+                status_text.text("📥 Downloading repository from GitHub...")
+                progress_bar.progress(10)
+                
+                repo_path = download_github_repo(
+                    github_url,
+                    progress_callback=lambda msg: status_text.text(msg)
+                )
+                
+                if not repo_path:
+                    st.error("❌ Failed to download repository. Please check the URL and try again.")
+                    progress_bar.empty()
+                    status_text.empty()
+                    return
+                
+                temp_repo_path = repo_path  # Store for cleanup
+                progress_bar.progress(20)
+            
+            # Handle local path
+            else:
+                if not repo_path or not repo_path.exists():
+                    st.error(f"❌ Repository path not found: {repo_path_input}")
+                    return
+                
+                if not repo_path.is_dir():
+                    st.error(f"❌ Path is not a directory: {repo_path_input}")
+                    return
+                
+                # Progress indicator
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                progress_bar.progress(20)
+            
             # AST Analysis
             status_text.text("🔍 Analyzing code structure...")
-            progress_bar.progress(20)
+            progress_bar.progress(40)
             ast_analyzer = ASTAnalyzer()
             ast_analyzer.analyze_directory(repo_path)
             architecture = ast_analyzer.get_architecture_summary()
             
             # Dependency Analysis
             status_text.text("🔗 Analyzing dependencies...")
-            progress_bar.progress(50)
+            progress_bar.progress(60)
             dep_analyzer = DependencyAnalyzer(repo_path)
             dependencies = dep_analyzer.analyze_project()
             
@@ -828,6 +989,8 @@ def main():
             st.session_state['ast_analyses'] = ast_analyzer.analyses
             st.session_state['repo_path'] = repo_path
             st.session_state['analyzed'] = True
+            st.session_state['is_github'] = is_github
+            st.session_state['github_url'] = github_url if is_github else None
             
             st.success("✅ Analysis completed successfully!")
             
@@ -839,9 +1002,15 @@ def main():
             
         except Exception as e:
             st.error(f"❌ Analysis failed: {str(e)}")
-            progress_bar.empty()
-            status_text.empty()
-            return
+            if 'progress_bar' in locals():
+                progress_bar.empty()
+            if 'status_text' in locals():
+                status_text.empty()
+        
+        finally:
+            # Cleanup temporary directory if it was a GitHub download
+            if temp_repo_path:
+                cleanup_temp_dir(temp_repo_path)
     
     # Display results if available
     if st.session_state.get('analyzed'):
